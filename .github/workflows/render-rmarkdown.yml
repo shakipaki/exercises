@@ -1,0 +1,41 @@
+name: Render R Markdown (HTML and PDF)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.3.3'
+          use-public-rspm: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libssl-dev zlib1g-dev libfontconfig1-dev
+          Rscript -e 'install.packages(c("rmarkdown", "knitr", "tidyverse", "vcfR", "tinytex"), repos="https://cloud.r-project.org")'
+          Rscript -e 'tinytex::install_tinytex()'
+
+      - name: Render HTML report
+        run: |
+          Rscript -e 'rmarkdown::render("Report_e1.Rmd", output_format="html_document", output_file="Report_e1.html", output_dir="output")'
+
+      - name: Render PDF report
+        run: |
+          Rscript -e 'rmarkdown::render("Report_e1.Rmd", output_format="pdf_document", output_file="Report_e1.pdf", output_dir="output")'
+
+      - name: Upload rendered reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-reports
+          path: output/
