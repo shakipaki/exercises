@@ -1,0 +1,227 @@
+---
+title: "Resequencing reporting: datasets_LABOS_exercise1"
+author: "Shakiba Hamedi"
+date: "October 2025"
+format:
+  html:
+    toc: true
+    toc-location: left
+    code-fold: true
+    code-link: true
+    theme:
+      dark: slate        
+    highlight-style: tango
+    smooth-scroll: true
+params:
+  vcf:
+    value: "c:/Users/Shaki/OneDrive/Documents/mariangela/e1/result_dataset1_annotation_haplotypecaller_joint_variant_calling_joint_germline_recalibrated_snpEff.ann.vcf.gz"
+  ext_funcs:
+    value: "c:/Users/Shaki/OneDrive/Documents/mariangela/e1/extract_annotations_full.R"
+---
+# Overview
+
+This report imports resequencing variants produced by sarek from a VCF file and annotates them using Rscript. I summarize functional consequences and apply biologically motivated filters(control genotype, and missense_variant consequence)to prioritize case-relevant variants. Selected variants are formatted for VEP, re-annotated, and then scored with AlphaMissense to highlight candidates classified as ambiguous or likely_pathogenic for downstream validation. Deliverables include consequence summaries, the top 20 filtered variants, a VEP-ready table, and filtered VEP/AlphaMissense results.
+
+### Variant calling and annotation
+
+VariantAnnotation for reading and parsing VCF data, and tidyverse for data wrangling and visualization.
+The external script specified in the parameters (extract_annotations_full.R) is sourced to provide helper functions for extracting the most severe annotation terms from the VCF.
+
+The VCF file contains detailed information about genomic variants identified through resequencing, including:
+
+RowRanges → genomic coordinates (chromosome, position, and variant name)
+
+INFO section → biological and computational annotations (e.g., gene impact, consequence, functional prediction)
+
+GENO section → genotype information for each sample (case and control)
+
+By reading these components, the dataset is converted into a structured R object.
+
+```{r variant_settings, echo=FALSE, include=FALSE}
+library(knitr)
+library(VariantAnnotation)
+library(tidyverse)
+source(params$ext_funcs)
+```
+
+Read vcf file from nf-core/sarek:
+```{r import_VCF, eval=TRUE, echo=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+vcf <- readVcf(params$vcf)
+```
+
+
+```{r rowRanges, eval=TRUE, echo=FALSE, include=FALSE}
+head(rowRanges(vcf))
+```
+
+```{r infoSection, eval=TRUE, echo=FALSE, include=FALSE}
+head(info(vcf))
+```
+
+
+```{r genoSection, eval=TRUE, echo=FALSE, include=FALSE}
+head(geno(vcf)$GT)
+```
+
+
+The table of annotations by the INFO field within the VCF file:
+
+```{r simplifyVCF, message=FALSE, warning=FALSE}
+variants <- rowRanges(vcf)
+variants$`REF` <- as.character(variants$`REF`)
+variants$ALT <- sapply(variants$ALT, function(x) as.character(x)[1])
+variants <- as_tibble(variants)
+variants$variantName = names(rowRanges(vcf))
+variants = cbind(variants, as_tibble(geno(vcf)$GT))
+names(variants)[names(variants) == "patient_01_sample_01"] <- "case_case1"
+names(variants)[names(variants) == "patient_02_sample_02"] <- "control_control1"
+variants$gene <- unlist(lapply(info(vcf)$ANN, get_most_severe_gene))
+variants$ens <- unlist(lapply(info(vcf)$ANN, get_most_severe_ens))
+variants$transcript <- unlist(lapply(info(vcf)$ANN, get_most_severe_tr))
+variants$aa_change <- unlist(lapply(info(vcf)$ANN, get_most_severe_aa_change))
+variants$consequence <- unlist(lapply(info(vcf)$ANN, get_most_severe_consequence))
+variants$impact <- unlist(lapply(info(vcf)$ANN, get_most_severe_impact))
+```
+
+### Localization and biological consequences of identified mutations
+
+This section visualizes the biological consequences of all identified variants extracted from the VCF file. Each variant is classified according to its predicted molecular effect (for example, missense_variant, synonymous_variant, frameshift_variant, etc.).
+The code aggregates the frequency of each consequence category and calculates its percentage relative to the total number of variants.
+
+```{r consequences, eval=TRUE, echo=FALSE, include=TRUE, fig.cap="Distribution of the percentage of identified mutations across biological consequence categories"}
+variants %>%
+  filter(!is.na(consequence)) %>%
+  count(consequence) %>%
+  mutate(count = n,
+         percent = paste0(round(count/sum(count) * 100, digits = 2), "%"))%>%
+  arrange(desc(count)) %>%
+  mutate(lab.ypos = cumsum(count) - 0.5 * count) %>%
+  ggplot(aes(x="", y=count, fill=consequence))+
+  geom_bar(width = 1, stat = "identity")+
+  coord_polar(theta = "y")+
+  ggrepel::geom_text_repel(aes(y=lab.ypos, label=percent), max.overlaps = Inf)+
+  theme_void()
+```
+ 
+Table format:
+ 
+```{r consequences_table, eval=TRUE, echo=FALSE, include=TRUE}
+variants %>%
+  filter(!is.na(consequence)) %>%
+  group_by(consequence) %>%
+  summarise(count=n()) %>%
+  arrange(desc(count)) %>%
+  kable()
+```
+
+
+## Variant Filtering
+### Filtering Criteria
+
+This section applies biological and technical filters to prioritize variants that are more likely to have a functional impact and to exclude background polymorphisms.
+The filtering criteria are defined as follows:
+
+The control sample must carry a reference genotype (0/0 or 0|0), ensuring that the variant is absent in healthy individuals.
+
+The predicted impact of the variant must be either MODERATE or HIGH, focusing on potentially damaging alterations.
+
+The functional consequence must correspond to missense_variant, which indicates an amino acid substitution that may alter protein structure or function.
+
+After filtering, the code converts the results into a tidy tibble and displays the first 20 variants that meet all criteria.
+
+```{r filterVariants, eval=TRUE, echo=TRUE, include=TRUE}
+filteredVars <- variants %>%
+  filter(
+    control_control1 %in% c("0/0", "0|0") &             
+    impact %in% c("MODERATE", "HIGH") &
+    consequence == "missense_variant"                    
+  )
+
+filteredVars <- as_tibble(filteredVars)
+filteredVars %>% head(20)%>% knitr::kable()
+```
+
+### Filtered mutations for further validation assays
+
+The filtered variants that have passed all selection criteria and are considered the most relevant for experimental validation.
+Each entry in the table corresponds to a mutation that:
+
+Is absent in the control sample,
+
+Has a moderate or high predicted impact, and
+
+Represents a missense variant, potentially altering amino acid composition and protein function.
+
+The table lists key genomic and functional attributes for each candidate, including:
+
+Chromosomal position (seqnames, start),
+
+Reference and alternate alleles (REF, ALT),
+
+Affected gene symbol,
+
+Functional consequence, and Amino acid change (aa_change).
+
+```{r filtered_vars_table, eval=TRUE, echo=FALSE, include=TRUE}
+selectedVars <- filteredVars %>%
+  dplyr::select(seqnames, start, REF, ALT, gene, consequence, aa_change) 
+selectedVars_table <- selectedVars 
+selectedVars_table %>% head(20) %>% knitr::kable()
+
+```
+### Preparing file for Ensembl Variant Effect Predictor(VEP)
+
+This step converts the filtered mutation dataset into a minimal, standardized format accepted by VEP for variant effect prediction.
+```{r create_table_for_VEP, eval=TRUE, echo=TRUE, include=TRUE}
+
+VEP.tab <- filteredVars %>%
+  dplyr::select(seqnames, start, REF, ALT) %>%
+  mutate(ID = ".",  .after = start) %>%
+  mutate(seqnames = substr(seqnames, 4, nchar(.))) 
+  
+write.table(VEP.tab, "LABOS_datasets1_table_to_VEP.txt", col.names = F, row.names = F, quote = FALSE)
+```
+
+
+
+### Alphamissense Pathogenicity Predictions of filtered variants
+
+
+After generating the filtered variant table in the required format, the file LABOS_datasets1_table_to_VEP.txt was uploaded to the Ensembl Variant Effect Predictor (VEP) web tool for additional functional annotation.
+Within the VEP interface, the GRCh38 human genome assembly was selected, and standard annotation options were applied, including:
+
+Gene and transcript information from Ensembl,
+
+Consequence terms according to Sequence Ontology,
+
+SIFT and PolyPhen predictions for protein impact,etc.
+
+AlphaMissense is a deep-learning–based model developed by Google DeepMind to predict the pathogenic potential of missense variants. It assigns two key outputs:
+
+am_class → categorical interpretation (benign, ambiguous, likely_pathogenic, etc.)
+
+am_pathogenicity → continuous score between 0 and 1 indicating the probability that the variant is disease-causing.
+
+By combining VEP functional annotations with AlphaMissense predictions, this step refines variant prioritization, focusing on amino acid substitutions with higher likelihood of clinical significance.
+
+```{r alphamissense, eval=TRUE, echo=FALSE, include=TRUE}
+
+vepped_table_LABOS_datasets1 <- "C:/Users/Shaki/OneDrive/Documents/mariangela/e1/vep_results_shakiba.txt"
+VEP.res <- read.table(vepped_table_LABOS_datasets1, header = T, sep ='\t',comment.char = "") 
+
+```
+
+This final filtered list highlights the most relevant candidate variants for biological interpretation and future experimental validation, integrating both VEP functional context and AlphaMissense pathogenicity assessment.
+
+```{r alphamissense_filtering, eval=TRUE, echo=TRUE, include=TRUE}
+selectedVars_table <- VEP.res %>% filter(am_class %in% c("ambiguous", "likely_pathogenic")) 
+selectedVars_table %>% 
+  select(Location, Consequence, SYMBOL, SIFT, PolyPhen, am_class, am_pathogenicity) %>% head(20) %>% 
+  knitr::kable()
+
+
+```
+
+```{r save_filtered_VEP_results, eval=TRUE, echo=TRUE, include=TRUE}
+write.table(selectedVars_table, "VEP_filtered_results_ex1_test.txt", row.names = F, quote = FALSE)
+```
