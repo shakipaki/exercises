@@ -14,3 +14,16 @@ The aim of this repository is to:
 
 If you have any suggestions, comments, or ideas for improving my analyses, I’d be truly happy to hear from you.
 Your feedback will help me grow as a bioinformatician and make this repository more valuable for others learning omics data analysis.
+
+Main Topics Covered
+
+RNA-seq data analysis (DESeq2, Salmon)
+
+Variant annotation and prioritization (VEP, AlphaMissense)
+
+Integration of transcriptomic and genomic data
+
+Functional enrichment (GO, KEGG)
+
+Using nf-core/sarek ,nf-core/rnaseq
+
