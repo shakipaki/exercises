@@ -1,0 +1,363 @@
+---
+title: "Final report"
+author: "Shakiba Hamedi"
+date: "`r format(Sys.Date())`"
+
+output:
+  html_document:
+    toc: true
+    toc_float: true       
+    code_folding: show   
+    theme: lumen
+    highlight: tango
+  pdf_document:
+    toc: true
+    number_sections: true
+    df_print: kable
+    latex_engine: xelatex
+    includes: null
+    keep_tex: false
+
+params:
+  vcf: "/home/rstudio/result_dataset1_annotation_haplotypecaller_joint_variant_calling_joint_germline_recalibrated_snpEff.ann.vcf.gz"
+  ext_funcs: "/home/rstudio/extract_annotations_full.R"
+  quant_path: "/home/rstudio/salmon"
+  tx2gene: "/home/rstudio/gencode.v29.transcripts_no-vers_chr21_tx2gene.txt"
+---
+
+
+# Introduction 
+
+Understanding the genetic basis of disease requires integrating information from multiple layers of biological data. Differential gene expression (DGE) analysis identifies genes whose transcriptional activity changes significantly between conditions, such as disease versus control, providing insights into dysregulated biological pathways. However, not all expression changes have a direct functional impact at the protein level.
+
+To bridge this gap, integrative bioinformatics pipelines combine RNA-seq–based expression profiling with variant calling and annotation data obtained from whole-genome or exome sequencing. This strategy enables the identification of genetic variants (e.g., missense mutations) occurring within differentially expressed genes (DEGs) that may have a pathogenic or regulatory impact.
+
+
+Test Information:
+
+
+Pipelines: nf-core/sarek (variant calling + SnpEff annotation) and nf-core/rnaseq (RNA-seq quantification + Salmon).
+
+Reference genome: GRCh38 (hg38).
+
+Differential expression: DESeq2 for case–control comparison and identification of significantly deregulated genes.
+
+Integration and downstream analysis: R (tidyverse, VariantAnnotation, tximport, clusterProfiler) for variant filtering, DEG integration, and visualization.
+
+# Analysis
+
+
+
+
+```{r packages, eval=TRUE, echo=FALSE, message=FALSE, include=FALSE}
+library(DESeq2)
+library(readr)
+library(kableExtra)
+library(tximport)
+library(tidyverse)
+library(pheatmap)
+library(clusterProfiler)
+library(DOSE)
+library(org.Hs.eg.db)
+```
+## Differential gene expression analysis
+
+
+Transcript-level quantification data obtained from nf-core/rnaseq (using Salmon) were imported into R through the tximport package and summarized to the gene level using the corresponding tx2gene mapping file.
+
+The experimental design matrix defined two conditions (control and treatment) each with three biological replicates.
+A DESeq2 object was created from the imported count matrix, and genes with low overall counts (sum < 10 across samples) were filtered out to improve statistical power.
+
+DESeq2 then estimated size factors for normalization, dispersion parameters for each gene, and performed Wald tests to evaluate differential expression under the model:
+
+expression ~ condition
+
+This analysis produced log2 fold changes and adjusted p-values (padj) for each gene, identifying those significantly upregulated or downregulated between conditions.
+The resulting dataset provides the foundation for downstream functional enrichment and integrative variant analysis.
+
+```{r set_conditions, eval=TRUE, echo=TRUE}
+dataset <- tibble(
+  sample = c("control_rep1",
+             "control_rep2",
+             "control_rep3",
+             "treatment_rep1",
+             "treatment_rep2",
+             "treatment_rep3"),
+  condition = c(rep("control", 3),
+                rep("case", 3))
+)
+
+dataset %>%kable()
+```
+
+```{r transc_gene_ids, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+tx2gene <- read_tsv(params$tx2gene, col_names = FALSE, show_col_types = FALSE)
+
+```
+
+
+```{r load_quant_files, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+files <- file.path(params$quant_path, dataset$sample, "quant.sf")
+names(files) <- dataset$sample
+```
+
+
+```{r tximport_quant_data, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene)
+colnames(txi$counts)
+dataset <- as.data.frame(dataset)
+rownames(dataset) <- colnames(txi$counts)
+
+```
+
+
+```{r build_dds_object, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+dds <- DESeqDataSetFromTximport(txi, dataset, ~condition)
+```
+
+```{r filter_low_exp_genes, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+
+```{r set_baseline, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+dds$condition <- relevel(dds$condition, ref = "control")
+```
+
+
+```{r diff_expr_analysis, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+dds <- DESeq(dds)
+```
+
+```{r list_expr_genes, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+res <- results(dds)
+head(results(dds, tidy=TRUE))  
+```
+
+
+
+```{r sort_gene_list, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+resOrdered <- res[order(res$padj),]
+resOrdered
+```
+
+### DE analysis summary
+
+```{r DEA_summary, eval=TRUE, echo=FALSE}
+summary(res)
+```
+
+## Data Visualization
+
+### MA plot
+
+```{r maplot, eval=TRUE, echo=FALSE, include=TRUE, fig.cap="Plot showing the log2 fold change over the mean of normalized counts for analysed samples"}
+plotMA(res, ylim=c(-3,3))
+#abline(h=c(-1,1), col="dodgerblue", lwd=2)
+```
+
+Points above or below the baseline indicate genes that are significantly up- or down-regulated in the treatment group compared to controls.
+
+### Dispersion plot
+
+Illustrates gene-wise dispersion estimates after shrinkage toward the fitted trend, indicating the degree of biological variability across expression levels.
+
+```{r}
+#pdf("plots_dispersion.pdf")
+plotDispEsts(dds)
+#dev.off()
+```
+
+
+### CLUSTERING analysis
+
+```{r}
+ntd <- normTransform(dds)        
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+
+df <- as.data.frame(colData(dds)[,c("condition")])
+```
+
+
+represents the top 20 most highly expressed genes after normalization, allowing visualization of expression patterns across samples. The clustering pattern confirms clear separation between case and control groups, suggesting consistent transcriptomic differences.
+
+```{r}
+pheatmap(assay(ntd)[select,],
+         cluster_cols=FALSE, annotation_col=df$condition)
+```
+
+
+### List of Differentially Expressed Genes
+
+```{r significant_genes_table, eval=TRUE, echo=FALSE, include=TRUE}
+resOrdered <- res[order(res$padj),]
+resOrdered <- na.omit(resOrdered)  
+resOrdered$Gene <- rownames(resOrdered)
+sign_de_genes_table <- as_tibble(resOrdered[resOrdered$padj < 0.1,])
+sign_de_genes_table %>% 
+    dplyr::select(Gene, log2FoldChange, pvalue, padj) %>%
+    knitr::kable()
+significant_de_genes <- sign_de_genes_table$Gene
+```
+
+
+## RNAseq and resequencing data integration
+
+
+### Variant annotation, filtering and prioritization
+
+Variant data obtained from the nf-core/sarek pipeline were imported into R as VCF files and processed using the VariantAnnotation package.
+Each variant was simplified into a tidy format, extracting essential genomic and functional fields such as reference and alternate alleles, gene ID, transcript, amino acid change, predicted consequence, and impact level from SnpEff annotations.
+
+This step enables the systematic characterization of mutation types across the dataset.
+The summary table below reports the frequency of each biological consequence (e.g., missense, synonymous, intronic, or splice-site variants), providing an overview of the mutation spectrum detected in the analyzed samples.
+
+```{r variant_settings, echo=FALSE, include=FALSE}
+library(knitr)
+library(VariantAnnotation)
+library(tidyverse)
+source(params$ext_funcs)
+```
+
+
+```{r import_VCF, eval=TRUE, echo=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+vcf <- readVcf(params$vcf)
+```
+
+
+```{r rowRanges, eval=TRUE, echo=FALSE, include=FALSE}
+head(rowRanges(vcf))
+```
+
+```{r infoSection, eval=TRUE, echo=FALSE, include=FALSE}
+head(info(vcf))
+```
+
+```{r genoSection, eval=TRUE, echo=FALSE, include=FALSE}
+head(geno(vcf)$GT)
+```
+
+
+```{r simplifyVCF, message=FALSE, warning=FALSE}
+variants <- rowRanges(vcf)
+variants$`REF` <- as.character(variants$`REF`)
+variants$ALT <- sapply(variants$ALT, function(x) as.character(x)[1])
+variants <- as_tibble(variants)
+variants$variantName = names(rowRanges(vcf))
+variants = cbind(variants, as_tibble(geno(vcf)$GT))
+names(variants)[names(variants) == "patient_01_sample_01"] <- "case_case1"
+names(variants)[names(variants) == "patient_02_sample_02"] <- "control_control1"
+variants$gene <- unlist(lapply(info(vcf)$ANN, get_most_severe_gene))
+variants$ens <- unlist(lapply(info(vcf)$ANN, get_most_severe_ens))
+variants$transcript <- unlist(lapply(info(vcf)$ANN, get_most_severe_tr))
+variants$aa_change <- unlist(lapply(info(vcf)$ANN, get_most_severe_aa_change))
+variants$consequence <- unlist(lapply(info(vcf)$ANN, get_most_severe_consequence))
+variants$impact <- unlist(lapply(info(vcf)$ANN, get_most_severe_impact))
+```
+
+
+```{r consequences_table, eval=TRUE, echo=FALSE, include=TRUE}
+variants %>%
+  filter(!is.na(consequence)) %>%
+  group_by(consequence) %>%
+  summarise(count=n()) %>%
+  arrange(desc(count)) %>%
+  kable()
+```
+
+
+### Filtering Criteria
+
+To prioritize biologically relevant mutations, multi-step filtering was applied to the annotated variant dataset.
+Only missense variants uniquely present in the case sample (absent in control),Filter:
+
+-   variants featuring a "*MODERATE*" or "*HIGH*" impact
+-   variants occurring in differentially expressed (DE) genes in cases vs control samples
+
+```{r filterVariants, eval=TRUE, echo=TRUE, include=TRUE}
+filteredVars = variants %>%
+  filter(control_control1 == "0/0" & 
+            (impact == "MODERATE" | impact == "HIGH") &
+             ens %in% significant_de_genes & 
+            consequence == "missense_variant") 
+filteredVars <- as_tibble(filteredVars)
+```
+
+
+```{r filtered_vars_table, eval=TRUE, echo=FALSE, include=TRUE}
+selectedVars <- filteredVars %>%
+  dplyr::select(ens, start, REF, ALT, gene, consequence, aa_change) 
+selectedVars_table <- selectedVars 
+selectedVars_table %>% knitr::kable()
+
+```
+
+## Predicting mutation impact on protein structure
+
+### Gene constraint metrics from gnomAD
+
+You need to search for LOEFF values related to investigated genes, to assess if...
+
+```{r gene_contraint, eval=TRUE, echo=FALSE, include=TRUE}
+genes <- c("SOD1", "ETS2", "PSMG1")
+loeuf <-c(1.51, 0.434, 0.926)
+data <- tibble(Gene = genes, LOEUF = loeuf) 
+data %>% 
+    knitr::kable()
+```
+
+### Alphamissense
+
+```{r}
+selectedVars$am_pathogenicity = c(0.085, 0.149, 0.977, 0.062, 0.076, 0.106)
+selectedVars$am_class = c("likely_benign", "likely_benign", "likely_pathogenic", "likely_benign", "likely_benign", "likely_benign")
+
+```
+
+### ClinVar: clinical significance
+
+```{r}
+selectedVars$clinVar = c("Conflicting classifications of pathogenicity", "Conflicting classifications of pathogenicity", "Pathogenic/Likely pathogenic","Benign", "Benign","Benign")
+
+```
+
+### gnomAD
+
+```{r}
+selectedVars$gnomAD_AF = c("7.50e-5","9.53e-4","4.97e-6","3.20e-3","9.33e-3", "5.35e-4")
+#21-31659828-31659828
+
+#7.50e-5 = 0.0000750
+
+```
+
+Table of annotated variants:
+
+```{r}
+selectedVars_table <- selectedVars  
+selectedVars_table %>% knitr::kable()
+```
+
+### Prioritized variant(s)
+
+```{r prioritized_variants, eval=TRUE, echo=FALSE, include=TRUE}
+#seqnames	start	REF	ALT	gene	consequence	aa_change	am_pathogenicity	am_class	clinVar	gnomAD_AF
+prioritised_variants <- selectedVars %>% 
+    filter(am_class == "likely_pathogenic" | am_class == "Conflicting classifications of pathogenicity" &
+               clinVar == "Pathogenic/Likely pathogenic")
+
+prioritised_variants %>% 
+    knitr::kable()
+```
+
+
+# Results and Conclution
+
+
+
+## Refrence
+
+
