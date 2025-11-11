@@ -1,0 +1,218 @@
+---
+title: "Sarek report"
+author: "Shakiba Hamedi"
+date: "`r format(Sys.Date())`"
+
+output:
+  html_document:
+    toc: true
+    toc_float: true       
+    code_folding: show   
+    theme: lumen
+    highlight: tango
+  pdf_document:
+    toc: true
+    number_sections: true
+    df_print: kable
+    latex_engine: xelatex
+    includes: null
+    keep_tex: false
+
+params:
+  vcf:
+    value: "c:/Users/Shaki/OneDrive/Documents/mariangela/e1/result_dataset1_annotation_haplotypecaller_joint_variant_calling_joint_germline_recalibrated_snpEff.ann.vcf.gz"
+  ext_funcs:
+    value: "c:/Users/Shaki/OneDrive/Documents/mariangela/e1/extract_annotations_full.R"
+---
+
+# Report summary
+
+This report provides a comprehensive analysis of resequencing data obtained from a germline variant calling pipeline. The analysis includes variant identification, functional annotation, prioritization, and computational pathogenicity prediction to support clinical interpretation of potentially disease-related variants.
+
+### Biological background 
+
+NRIP1 (Nuclear Receptor Interacting Protein 1) encodes a transcriptional co-regulator that interacts with nuclear hormone receptors.
+
+It modulates genes involved in energy metabolism, reproduction, and cell growth.
+Altered NRIP1 expression has been linked to metabolic disorders (obesity, insulin resistance) and hormone-related cancers (breast, colorectal).
+
+NRIP1 was selected because it plays a central regulatory role in multiple signaling pathways, and several missense variants remain clinically uncertain (VUS) in databases like ClinVar and gnomAD, making it ideal
+
+### Test Information
+
+Sequencing data were processed and analyzed under standardized parameters ensuring quality and reproducibility:
+
+Pipeline: nf-core/sarek (variant calling + SnpEff annotation)
+
+Reference genome: GRCh38
+
+Downstream analysis: R (tidyverse, VariantAnnotation)
+
+```{r variant_settings, echo=FALSE, include=FALSE}
+library(knitr)
+library(kableExtra)
+library(VariantAnnotation)
+library(tidyverse)
+source(params$ext_funcs)
+```
+
+```{r import_VCF, eval=TRUE, echo=FALSE, include=TRUE, warning=FALSE, message=FALSE}
+vcf <- readVcf(params$vcf)
+```
+
+
+```{r rowRanges, eval=TRUE, echo=FALSE, include=FALSE}
+head(rowRanges(vcf))
+```
+
+```{r infoSection, eval=TRUE, echo=FALSE, include=FALSE}
+head(info(vcf))
+```
+
+
+```{r genoSection, eval=TRUE, echo=FALSE, include=FALSE}
+head(geno(vcf)$GT)
+```
+
+
+
+```{r simplifyVCF, message=FALSE, warning=FALSE}
+variants <- rowRanges(vcf)
+variants$`REF` <- as.character(variants$`REF`)
+variants$ALT <- sapply(variants$ALT, function(x) as.character(x)[1])
+variants <- as_tibble(variants)
+variants$variantName = names(rowRanges(vcf))
+variants = cbind(variants, as_tibble(geno(vcf)$GT))
+names(variants)[names(variants) == "patient_01_sample_01"] <- "case_case1"
+names(variants)[names(variants) == "patient_02_sample_02"] <- "control_control1"
+variants$gene <- unlist(lapply(info(vcf)$ANN, get_most_severe_gene))
+variants$ens <- unlist(lapply(info(vcf)$ANN, get_most_severe_ens))
+variants$transcript <- unlist(lapply(info(vcf)$ANN, get_most_severe_tr))
+variants$aa_change <- unlist(lapply(info(vcf)$ANN, get_most_severe_aa_change))
+variants$consequence <- unlist(lapply(info(vcf)$ANN, get_most_severe_consequence))
+variants$impact <- unlist(lapply(info(vcf)$ANN, get_most_severe_impact))
+```
+
+### Localization and biological consequences of identified mutations
+
+
+```{r consequences, eval=TRUE, echo=FALSE, include=TRUE, fig.cap="Distribution of the percentage of identified mutations across biological consequence categories"}
+variants %>%
+  filter(!is.na(consequence)) %>%
+  count(consequence) %>%
+  mutate(count = n,
+         percent = paste0(round(count/sum(count) * 100, digits = 2), "%"))%>%
+  arrange(desc(count)) %>%
+  mutate(lab.ypos = cumsum(count) - 0.5 * count) %>%
+  ggplot(aes(x="", y=count, fill=consequence))+
+  geom_bar(width = 1, stat = "identity")+
+  coord_polar(theta = "y")+
+  ggrepel::geom_text_repel(aes(y=lab.ypos, label=percent), max.overlaps = Inf)+
+  theme_void()
+```
+ 
+Table format:
+ 
+```{r consequences_table, eval=TRUE, echo=FALSE, include=TRUE}
+variants %>%
+  filter(!is.na(consequence)) %>%
+  group_by(consequence) %>%
+  summarise(count=n()) %>%
+  arrange(desc(count)) %>%
+  kable()
+```
+
+
+# Variant Filtering and prioritization 
+
+
+
+
+```{r filterVariants, eval=TRUE, echo=TRUE, include=TRUE}
+filteredVars <- variants %>%
+  filter(
+    control_control1 %in% c("0/0", "0|0") &             
+    impact %in% c("MODERATE", "HIGH") &
+    consequence == "missense_variant"                    
+  )
+
+
+```
+
+### Filtered mutations for further validation assays
+
+
+
+```{r filtered_vars_table, eval=TRUE, echo=FALSE, include=TRUE}
+selectedVars <- filteredVars %>%
+  dplyr::select(seqnames, start, REF, ALT, gene, consequence, aa_change,impact) 
+selectedVars_table <- selectedVars 
+selectedVars_table %>% head(5) %>% knitr::kable()
+
+```
+
+# Results and Alphamissense Pathogenicity 
+
+## Primary findings
+
+Three missense variants in the NRIP1 gene were identified. These are directly relevant to the primary indication for testing, given their association with NRIP1-related disorders and nuclear receptor signaling.
+
+## Secondary findings
+
+Two additional moderate-impact variants were detected in LIPI (p.Cys286Arg) and SAMSN1 (p.Lys269Asn). These genes are not directly linked to the primary phenotype but may represent secondary findings of potential biological interest.
+
+### LIPI Variant 
+
+This missense variant (C→R, moderate impact) is predicted deleterious by SIFT (0.00) and probably damaging by PolyPhen (0.995–1.00), but occurs at a relatively high population frequency (gnomAD ≈ 0.004) and is classified as benign in ClinVar. Despite its annotation in LIPI-related familial hypertriglyceridaemia (G2P), there is no supporting clinical or functional evidence of pathogenicity. It is thus considered a likely benign, non-actionable secondary finding
+
+
+### SAMSN1 variant
+This missense change (K→N) shows low predicted impact (SIFT = 0.02 deleterious, PolyPhen = 0.25 benign) and occurs at a low population frequency (gnomAD ≈ 0.0012). ClinVar classifies it as likely benign, and there is no evidence linking SAMSN1 to any monogenic disease. Therefore, the variant lacks clinical relevance and is reported as a non-actionable secondary finding.
+
+```{r create_table_for_VEP, eval=TRUE, echo=FALSE, include=TRUE}
+
+VEP.tab <- filteredVars %>%
+  dplyr::select(seqnames, start, REF, ALT) %>%
+  mutate(ID = ".",  .after = start) %>%
+  mutate(seqnames = substr(seqnames, 4, nchar(.))) 
+  
+write.table(VEP.tab, "LABOS_datasets1_table_to_VEP.txt", col.names = F, row.names = F, quote = FALSE)
+```
+
+## Alphamissense Pathogenicity for NRIP1
+
+
+```{r alphamissense, eval=TRUE, echo=FALSE, include=TRUE}
+
+vepped_table_LABOS_datasets1 <- "c:/Users/Shaki/OneDrive/Documents/mariangela/e1/results_ensemblevep.txt"
+VEP.res <- read.table(vepped_table_LABOS_datasets1, header = T, sep ='\t',comment.char = "") 
+
+```
+
+
+```{r alphamissense_filtering, eval=TRUE, echo=FALSE, include=TRUE}
+VEP.res <- read.table("c:/Users/Shaki/OneDrive/Documents/mariangela/e1/results_ensemblevep.txt",
+header=TRUE, sep="\t", comment.char = "")
+am_selected <- VEP.res %>% filter(am_class %in% c("ambiguous","likely_pathogenic"))
+
+am_selected %>%
+select(Location, SYMBOL, SIFT, PolyPhen, am_class, am_pathogenicity) %>%
+head(1) %>%
+kable(booktabs = TRUE, longtable = TRUE, align = "l",
+caption = "AlphaMissense pathogenicity predictions") %>%
+kable_styling(full_width = FALSE, latex_options = c("hold_position","striped")) 
+
+
+
+```
+
+
+This heterozygous missense variant in NRIP1 (ENST00000318948.7; MANE Select transcript) results in a tyrosine-to-aspartic acid substitution at codon 1144. It is predicted as deleterious by SIFT (0.01) and possibly damaging by PolyPhen (0.634), while the AlphaMissense pathogenicity score (0.3487) falls within the ambiguous range. The variant is rare in population databases (gnomAD AF ≈ 0.0006) and has been reported in ClinVar as likely benign.
+
+Therefore, this variant is classified as a Variant of Uncertain Significance (VUS) and represents the primary finding of this analysis.
+
+
+```{r save_filtered_VEP_results, eval=TRUE, echo=FALSE, include=TRUE}
+write.table(selectedVars_table, "VEP_filtered_results_ex1_test.txt", row.names = F, quote = FALSE)
+
+```
